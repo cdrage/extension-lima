@@ -1,0 +1,57 @@
+name: Publish release image
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Match tag to extension version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Validate release version
+        id: version
+        run: |
+          node <<'NODE'
+          const assert = require('node:assert/strict');
+          const fs = require('node:fs');
+          const { version } = require('./package.json');
+          const tag = process.env.GITHUB_REF_NAME;
+
+          assert.match(tag, /^v\d+\.\d+\.\d+$/, 'Use a stable release tag, for example v1.31.0');
+          assert.equal(tag, `v${version}`, 'The release tag must match package.json');
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `version=${version}\n`);
+          NODE
+
+  checks:
+    needs: version
+    uses: ./.github/workflows/pr-check.yaml
+
+  publish:
+    needs: [version, checks]
+    uses: ./.github/workflows/publish-image.yaml
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    with:
+      tags: latest ${{ needs.version.outputs.version }}

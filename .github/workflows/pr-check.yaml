@@ -1,0 +1,103 @@
+name: pr-check
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Tests / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    env:
+      CI: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          run_install: false
+          cache: true
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run typecheck
+        run: pnpm typecheck
+
+      - name: Run unit tests with coverage
+        run: pnpm test:coverage
+
+      - name: Run build and bundle tests
+        run: pnpm test:build
+
+      - name: Upload coverage
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: coverage-${{ matrix.os }}
+          path: coverage/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  extension-image:
+    name: Build and test OCI images
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      - name: Install QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static
+
+      - name: Build extension images
+        id: image
+        uses: redhat-actions/buildah-build@719e3c40d8af9790c23eca13f7daa339f2867034 # v3.1.0
+        with:
+          image: podman-desktop-extension-lima
+          tags: ci
+          archs: amd64, arm64
+          containerfiles: Containerfile
+          context: .
+          oci: true
+
+      - name: Test packaged extensions
+        env:
+          IMAGE: ${{ steps.image.outputs.image_with_tag }}
+        run: |
+          for arch in amd64 arm64; do
+            image="$IMAGE-$arch"
+            test "$(podman image inspect --format '{{.Architecture}}' "$image")" = "$arch"
+            payload="$RUNNER_TEMP/lima-$arch"
+            mkdir -p "$payload"
+
+            # Export the payload without a process in the scratch image.
+            container_id=$(podman create --pull=never --platform "linux/$arch" "$image" /unused)
+            podman export --output "$payload/image.tar" "$container_id"
+            podman rm "$container_id"
+            tar -xf "$payload/image.tar" -C "$payload"
+            LIMA_EXTENSION_ROOT="$payload/extension" node --test tests/build.test.cjs
+          done

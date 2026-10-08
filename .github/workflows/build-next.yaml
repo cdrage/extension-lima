@@ -1,0 +1,30 @@
+name: Build and publish next image
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize updates to the next image tag.
+concurrency:
+  group: publish-next
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    uses: ./.github/workflows/pr-check.yaml
+
+  publish:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    needs: checks
+    uses: ./.github/workflows/publish-image.yaml
+    permissions:
+      contents: read
+      packages: write
+      attestations: write
+      id-token: write
+    with:
+      tags: next ${{ github.sha }}
